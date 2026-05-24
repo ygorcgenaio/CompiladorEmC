@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "lex.h"
+
+#define MAX_ERRORS 100
 
 FILE *arquivo;
 Token currentToken;
@@ -8,240 +11,304 @@ Token currentToken;
 char* errors[MAX_ERRORS];
 int errorCount = 0;
 
+// ================= AST =================
+typedef struct ASTNode {
+    char *label;
+    struct ASTNode **children;
+    int childCount;
+} ASTNode;
+
+ASTNode* createNode(const char *label) {
+    ASTNode *node = (ASTNode*)malloc(sizeof(ASTNode));
+    node->label = strdup(label);
+    node->children = NULL;
+    node->childCount = 0;
+    return node;
+}
+
+void addChild(ASTNode *parent, ASTNode *child) {
+    parent->children = realloc(parent->children, sizeof(ASTNode*) * (parent->childCount + 1));
+    parent->children[parent->childCount++] = child;
+}
+
+void printAST(ASTNode *node, int depth) {
+    for(int i = 0; i < depth; i++) printf("  ");
+    printf("%s\n", node->label);
+    for(int i = 0; i < node->childCount; i++) {
+        printAST(node->children[i], depth + 1);
+    }
+}
+
+// ================= ERRO =================
 void reportError(const char* msg, int linha, int coluna) {
     if (errorCount < MAX_ERRORS) {
         char buffer[200];
-        snprintf(buffer, sizeof(buffer), "Erro na linha %d, coluna %d: %s", linha, coluna, msg);
+        snprintf(buffer, sizeof(buffer),
+                 "Erro na linha %d, coluna %d: %s",
+                 linha, coluna, msg);
         errors[errorCount++] = strdup(buffer);
     }
 }
 
-void match(TokenTipo esperado, FILE* arquivo) {
-    if (lookahead.tipo == esperado) {
-        lookahead = getNextToken(arquivo);
-    } else {
-        reportError("Token inesperado", lookahead.location.linha, lookahead.location.coluna);
-        // Recuperação simples: avança até um ponto seguro
-        while (lookahead.tipo != SEMICOLON && lookahead.tipo != EOF_TOKEN) {
-            lookahead = getNextToken(arquivo);
-        }
-    }
-}
-// 🔹 Avança para o próximo token
+// ================= CONTROLE =================
 void advance() {
     currentToken = getNextToken(arquivo);
-    // ignora comentários
     while (currentToken.tipo == COMENTARIO) {
         currentToken = getNextToken(arquivo);
     }
 }
-// 🔹 Valida token esperado
+
+void synchronize() {
+    while (currentToken.tipo != SEMICOLON &&
+           currentToken.tipo != RBRACE &&
+           currentToken.tipo != EOF_TOKEN) {
+        advance();
+    }
+    if (currentToken.tipo == SEMICOLON) {
+        advance();
+    }
+}
+
 void match(TokenTipo esperado) {
     if (currentToken.tipo == esperado) {
         advance();
     } else {
-        printf("Erro sintático! Esperado: %d, Recebido: %d\n",
-               esperado, currentToken.tipo);
-        exit(1);
-    }
-}
-//void args();
-
-void class(){
-    if (currentToken.tipo == CLASS){
-        match(CLASS);
-        match(IDENTIFICADOR);
-
-        if(currentToken.tipo == INHERITS){
-            match(INHERITS);
-            match(IDENTIFICADOR);
-        }
-
-        match(LBRACE);
-        if(currentToken.tipo == IDENTIFICADOR){
-            feature();
-        }
-        match(RBRACE);
+        reportError("Token inesperado",
+                    currentToken.location.linha,
+                    currentToken.location.coluna);
+        synchronize();
     }
 }
 
-void feature(){
+// ================= PROTÓTIPOS =================
+ASTNode* program();
+ASTNode* classNode();
+ASTNode* feature();
+ASTNode* formal();
+ASTNode* expr();
+ASTNode* args();
+ASTNode* expr_rel();
+ASTNode* expr_arit();
+ASTNode* term();
+ASTNode* factor();
+
+// ================= PROGRAMA =================
+ASTNode* program() {
+    ASTNode *root = createNode("Program");
+    while (currentToken.tipo == CLASS) {
+        addChild(root, classNode());
+    }
+    return root;
+}
+
+// ================= CLASS =================
+ASTNode* classNode() {
+    ASTNode *node = createNode("Class");
+    match(CLASS);
     match(IDENTIFICADOR);
-    if(currentToken.tipo == LPAREN){
-        match(LPAREN);
-        if(currentToken.tipo == IDENTIFICADOR){
-            match(IDENTIFICADOR);
-        }
+
+    if (currentToken.tipo == INHERITS) {
+        match(INHERITS);
+        match(IDENTIFICADOR);
     }
+
+    match(LBRACE);
+    while (currentToken.tipo == IDENTIFICADOR) {
+        addChild(node, feature());
+    }
+    match(RBRACE);
+    match(SEMICOLON);
+    return node;
 }
 
-void expr() {
-    // 🔸 IF
-    if (currentToken.tipo == IF) {
-        match(IF);
-        expr();
-        match(THEN);
-        expr();
-        match(ELSE);
-        expr();
-        match(FI);
-    }
+// ================= FORMAL =================
+ASTNode* formal() {
+    ASTNode *node = createNode("Formal");
+    match(IDENTIFICADOR);
+    match(COLON);
+    match(IDENTIFICADOR);
+    return node;
+}
 
-    // 🔸 WHILE
-    else if (currentToken.tipo == WHILE) {
-        match(WHILE);
-        expr();
-        match(LOOP);
-        expr();
-        match(POOL);
-    }
+// ================= FEATURE =================
+ASTNode* feature() {
+    ASTNode *node = createNode("Feature");
+    match(IDENTIFICADOR);
 
-    // 🔸 LET
-    else if (currentToken.tipo == LET) {
-        match(LET);
-
-        match(IDENTIFICADOR);
+    if (currentToken.tipo == LPAREN) {
+        ASTNode *methodNode = createNode("Method");
+        match(LPAREN);
+        if (currentToken.tipo == IDENTIFICADOR) {
+            addChild(methodNode, formal());
+            while (currentToken.tipo == COMMA) {
+                match(COMMA);
+                addChild(methodNode, formal());
+            }
+        }
+        match(RPAREN);
         match(COLON);
-        match(IDENTIFICADOR); // tipo simplificado
-
+        match(IDENTIFICADOR);
+        match(LBRACE);
+        addChild(methodNode, expr()); // corpo do método
+        match(RBRACE);
+        addChild(node, methodNode);
+    } else {
+        ASTNode *attrNode = createNode("Attribute");
+        match(COLON);
+        match(IDENTIFICADOR);
         if (currentToken.tipo == ATRIBUI) {
             match(ATRIBUI);
-            expr();
+            addChild(attrNode, expr());
         }
-
-        match(IN);
-        expr();
+        addChild(node, attrNode);
     }
+    match(SEMICOLON);
+    return node;
+}
 
-    // 🔸 NEW
-    else if (currentToken.tipo == NEW) {
-        match(NEW);
-        match(IDENTIFICADOR);
+// ================= EXPRESSÕES =================
+ASTNode* expr() {
+    if (currentToken.tipo == IF) {
+        ASTNode *node = createNode("If");
+        match(IF);
+        addChild(node, expr());
+        match(THEN);
+        addChild(node, expr());
+        match(ELSE);
+        addChild(node, expr());
+        match(FI);
+        return node;
     }
-
-    // 🔸 NOT
-    else if (currentToken.tipo == NOT) {
-        match(NOT);
-        expr();
+    else if (currentToken.tipo == WHILE) {
+        ASTNode *node = createNode("While");
+        match(WHILE);
+        addChild(node, expr());
+        match(LOOP);
+        addChild(node, expr());
+        match(POOL);
+        return node;
     }
-
-    // 🔸 IDENTIFICADOR → variável ou chamada
-    else if (currentToken.tipo == IDENTIFICADOR) {
-        match(IDENTIFICADOR);
-
-        // chamada de método
-        if (currentToken.tipo == LPAREN) {
-            match(LPAREN);
-            args();
-            match(RPAREN);
-        }
-    }
-
-    // 🔸 número
     else if (currentToken.tipo == NUMERO) {
+        ASTNode *node = createNode("Numero");
         match(NUMERO);
+        return node;
     }
+    else if (currentToken.tipo == IDENTIFICADOR) {
+        ASTNode *node = createNode("Identificador");
+        match(IDENTIFICADOR);
+        return node;
+    }
+    else {
+        return expr_rel();
+    }
+}
 
-    // 🔸 string
+// ================= RELACIONAL =================
+ASTNode* expr_rel() {
+    ASTNode *node = createNode("RelExpr");
+    addChild(node, expr_arit());
+    if (currentToken.tipo == MENOR ||
+        currentToken.tipo == MENOROUIGUAL ||
+        currentToken.tipo == MAIOR ||
+        currentToken.tipo == MAIOROUIGUAL ||
+        currentToken.tipo == IGUAL) {
+        advance();
+        addChild(node, expr_arit());
+    }
+    return node;
+}
+
+// ================= ARITMÉTICA =================
+ASTNode* expr_arit() {
+    ASTNode *node = createNode("AritExpr");
+    addChild(node, term());
+    while (currentToken.tipo == MAIS || currentToken.tipo == MENOS) {
+        advance();
+        addChild(node, term());
+    }
+    return node;
+}
+
+ASTNode* term() {
+    ASTNode *node = createNode("Term");
+    addChild(node, factor());
+    while (currentToken.tipo == MULTIPLICACAO || currentToken.tipo == DIVISAO) {
+        advance();
+        addChild(node, factor());
+    }
+    return node;
+}
+
+ASTNode* factor() {
+    if (currentToken.tipo == NUMERO) {
+        ASTNode *node = createNode("Numero");
+        match(NUMERO);
+        return node;
+    }
+    else if (currentToken.tipo == IDENTIFICADOR) {
+        ASTNode *node = createNode("Identificador");
+        match(IDENTIFICADOR);
+        return node;
+    }
+    else if (currentToken.tipo == LPAREN) {
+        match(LPAREN);
+        ASTNode *node = expr();
+        match(RPAREN);
+        return node;
+    }
     else if (currentToken.tipo == STRING) {
+        ASTNode *node = createNode("String");
         match(STRING);
+        return node;
     }
-
-    // 🔸 TRUE / FALSE
     else if (currentToken.tipo == TRUE) {
+        ASTNode *node = createNode("True");
         match(TRUE);
+        return node;
     }
     else if (currentToken.tipo == FALSE) {
+        ASTNode *node = createNode("False");
         match(FALSE);
+        return node;
     }
-
-    // 🔸 parênteses
-    else if (currentToken.tipo == LPAREN) {
-        match(LPAREN);
-        expr();
-        match(RPAREN);
-    }
-
     else {
-        printf("Erro: expressão inválida\n");
-        exit(1);
+        reportError("Factor inválido", currentToken.location.linha, currentToken.location.coluna);
+        synchronize();
+        return createNode("Erro");
     }
 }
 
-void args() {
-
-    if (currentToken.tipo == RPAREN) {
-        return; // vazio
-    }
-
-    expr();
-
+// ================= ARGUMENTOS =================
+ASTNode* args() {
+    ASTNode *node = createNode("Args");
+    if (currentToken.tipo == RPAREN) return node;
+    addChild(node, expr());
     while (currentToken.tipo == COMMA) {
         match(COMMA);
-        expr();
+        addChild(node, expr());
     }
+    return node;
 }
-/*void factor();
-void term();
-void expr_arit();
-void factor() {
-    if (currentToken.tipo == NUMERO) {
-        match(NUMERO);
-    }
-    else if (currentToken.tipo == IDENTIFICADOR) {
-        match(IDENTIFICADOR);
-    }
-    else if (currentToken.tipo == LPAREN) {
-        match(LPAREN);
-        expr_arit();
-        match(RPAREN);
-    }
-    else {
-        printf("Erro em factor\n");
-        exit(1);
-    }
-}
-    void term() {
-    factor();
 
-    while (currentToken.tipo == MULTIPLICACAO ||
-           currentToken.tipo == DIVISAO) {
-
-        if (currentToken.tipo == MULTIPLICACAO)
-            match(MULTIPLICACAO);
-        else
-            match(DIVISAO);
-
-        factor();
-    }
-}
-    void expr_arit() {
-    term();
-
-    while (currentToken.tipo == MAIS ||
-           currentToken.tipo == MENOS) {
-
-        if (currentToken.tipo == MAIS)
-            match(MAIS);
-        else
-            match(MENOS);
-
-        term();
-    }
-}
-*/
+// ================= MAIN =================
 int main() {
-     FILE* arquivo = fopen("teste.txt", "r");
-    lookahead = getNextToken(arquivo);
-    Stmt(arquivo); // símbolo inicial
+    arquivo = fopen("teste.txt", "r");
+    if (!arquivo) {
+        printf("Erro ao abrir arquivo\n");
+        return 1;
+    }
+
+    advance();
+    ASTNode *root = program();
 
     if (errorCount > 0) {
         for (int i = 0; i < errorCount; i++) {
             printf("%s\n", errors[i]);
-            free(errors[i]); // liberar memória
+            free(errors[i]);
         }
     } else {
         printf("Compilação concluída sem erros!\n");
+        printAST(root, 0);
     }
 
     fclose(arquivo);
