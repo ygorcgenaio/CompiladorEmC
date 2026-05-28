@@ -441,13 +441,21 @@ const char* checkExpr(ASTNode* node, char* classeOrigem) {
     /* ---------- COMPLEMENTO ---------- */
 
     else if(node->tipo == NODE_COMPLEMENTO){
-    
+        const char* type_expr = checkExpr(node->dados.operacao_unaria.expressao, classeOrigem);
+        
+        if(strcmp(type_expr, "Int") < 0){
+            printf("Erro semântico: "
+                    "operação de complemento requer um Inteiro\n");
+            sm_errors+= 1;
+        }
+
+        return "Int";
     }
 
     /* ---------- ISVOID ---------- */
 
     else if(node->tipo == NODE_ISVOID){
-    
+        
     }
 
 
